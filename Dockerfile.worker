@@ -1,0 +1,10 @@
+# Build stage
+FROM rust:1.75 as builder
+WORKDIR /usr/src/dmarcer
+COPY . .
+RUN cargo build --release --bin dmarcer_worker
+
+# Runtime stage
+FROM debian:bookworm-slim
+COPY --from=builder /usr/src/dmarcer/target/release/dmarcer_worker /usr/local/bin/dmarcer_worker
+CMD ["dmarcer_worker"]
