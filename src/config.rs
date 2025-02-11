@@ -85,8 +85,8 @@ mod tests {
 
     #[test]
     fn test_config_defaults() {
-        // Remove environment variables so that defaults are used.
-        env::remove_var("DMARC_WEBHOOK_URL");
+        // In this test, explicitly set the webhook URL to an empty string so that it is treated as unset.
+        env::set_var("DMARC_WEBHOOK_URL", "");
         env::remove_var("DMARC_MAX_FILE_SIZE");
         env::remove_var("DMARC_WEBHOOK_TIMEOUT_SECS");
         env::remove_var("DMARC_MAX_DECOMPRESSED_SIZE");
@@ -95,7 +95,7 @@ mod tests {
         env::remove_var("DMARC_MAX_FILENAME_LENGTH");
 
         let config = Config::new().unwrap();
-        // webhook_url should be None when not set.
+        // webhook_url should be None because an empty string is filtered out.
         assert!(config.webhook_url.is_none());
         assert_eq!(config.max_file_size, 10 * 1024 * 1024);
         assert_eq!(config.webhook_timeout, 30);
