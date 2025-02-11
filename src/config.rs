@@ -3,10 +3,8 @@
 //! This module reads configuration values from environment variables, provides
 //! sensible defaults, and validates key security parameters such as maximum file
 //! sizes and decompression limits.
-
 use anyhow::Result;
 use std::env;
-
 #[derive(Debug)]
 pub struct Config {
     pub webhook_url: Option<String>,
@@ -18,7 +16,6 @@ pub struct Config {
     pub max_compression_ratio: f64,
     pub max_filename_length: usize,
 }
-
 impl Config {
     /// Creates a new configuration by reading environment variables.
     /// If a variable is missing or empty, a default value is used.
@@ -28,44 +25,36 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10 * 1024 * 1024);
-
         if max_file_size > 500_000_000 {
             return Err(anyhow::anyhow!("Max file size too large (500MB limit)"));
         }
-
         // For webhook_timeout, try DMARC_WEBHOOK_TIMEOUT_SECS then DMARC_WEBHOOK_TIMEOUT.
         let webhook_timeout = env::var("DMARC_WEBHOOK_TIMEOUT_SECS")
             .or_else(|_| env::var("DMARC_WEBHOOK_TIMEOUT"))
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(30);
-
         let max_decompressed_size = env::var("DMARC_MAX_DECOMPRESSED_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(100 * 1024 * 1024);
-
         let max_files_in_zip = env::var("DMARC_MAX_FILES_IN_ZIP")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1000);
-
         let max_compression_ratio = env::var("DMARC_MAX_COMPRESSION_RATIO")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1000.0);
-
         let max_filename_length = env::var("DMARC_MAX_FILENAME_LENGTH")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(256);
-
-        // Trim the webhook URL before checking for emptiness.
+        // Read and trim the webhook URL. An empty (or whitespace-only) string is filtered out.
         let webhook_url = env::var("DMARC_WEBHOOK_URL")
-            .map(|s| s.trim().to_string())
             .ok()
+            .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty());
-
         Ok(Config {
             webhook_url,
             webhook_timeout,
@@ -77,15 +66,15 @@ impl Config {
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
-
     #[test]
     fn test_config_defaults() {
-        // In this test, explicitly set the webhook URL to an empty string so that it is treated as unset.
+        // Ensure that DMARC_WEBHOOK_URL is not set.
+        env::remove_var("DMARC_WEBHOOK_URL");
+        // Force it to be an empty string.
         env::set_var("DMARC_WEBHOOK_URL", "");
         env::remove_var("DMARC_MAX_FILE_SIZE");
         env::remove_var("DMARC_WEBHOOK_TIMEOUT_SECS");
@@ -93,9 +82,10 @@ mod tests {
         env::remove_var("DMARC_MAX_FILES_IN_ZIP");
         env::remove_var("DMARC_MAX_COMPRESSION_RATIO");
         env::remove_var("DMARC_MAX_FILENAME_LENGTH");
-
         let config = Config::new().unwrap();
-        // webhook_url should be None because an empty string is filtered out.
+        // Debug print to ensure the variable is empty.
+        eprintln!("DEBUG: webhook_url = {:?}", config.webhook_url);
+        // webhook_url should be None when it is an empty string.
         assert!(config.webhook_url.is_none());
         assert_eq!(config.max_file_size, 10 * 1024 * 1024);
         assert_eq!(config.webhook_timeout, 30);
@@ -104,7 +94,6 @@ mod tests {
         assert_eq!(config.max_compression_ratio, 1000.0);
         assert_eq!(config.max_filename_length, 256);
     }
-
     #[test]
     fn test_config_from_env() {
         // Set environment variables for testing.
@@ -115,7 +104,6 @@ mod tests {
         env::set_var("DMARC_MAX_FILES_IN_ZIP", "500");
         env::set_var("DMARC_MAX_COMPRESSION_RATIO", "500.0");
         env::set_var("DMARC_MAX_FILENAME_LENGTH", "128");
-
         let config = Config::new().unwrap();
         assert_eq!(config.webhook_url, Some("http://example.com".to_string()));
         assert_eq!(config.max_file_size, 5242880);

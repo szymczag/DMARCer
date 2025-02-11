@@ -50,18 +50,18 @@ impl FileHandler {
     fn handle_zip(&self, path: &std::path::Path) -> crate::error::Result<Vec<String>> {
         let file = std::fs::File::open(path)?;
         let reader = BufReader::with_capacity(BUFFER_SIZE, file);
-        let mut archive = zip::ZipArchive::new(reader)
+        let mut archive = zip::read::ZipArchive::new(reader)
             .map_err(|e| crate::error::DmarcError::Zip(e))?;
         let max_size = self.config.max_file_size;
         let mut contents_vec = Vec::new();
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i)
+            let mut file_in_zip = archive.by_index(i)
                 .map_err(|e| crate::error::DmarcError::Zip(e))?;
-            if file.size() as usize > max_size {
-                return Err(crate::error::DmarcError::FileTooLarge(format!("File in ZIP too large: {}", file.name())));
+            if file_in_zip.size() as usize > max_size {
+                return Err(crate::error::DmarcError::FileTooLarge(format!("File in ZIP too large: {}", file_in_zip.name())));
             }
-            let mut contents = String::with_capacity(file.size() as usize);
-            file.read_to_string(&mut contents)?; // Read file content.
+            let mut contents = String::with_capacity(file_in_zip.size() as usize);
+            file_in_zip.read_to_string(&mut contents)?;
             if contents.trim().is_empty() {
                 return Err(crate::error::DmarcError::Parse("Empty file".into()));
             }
@@ -77,7 +77,7 @@ impl FileHandler {
         let file = std::fs::File::open(path)?;
         let mut gz = flate2::read::GzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, file));
         let mut contents = String::new();
-        let len = gz.read_to_string(&mut contents)?; // Read decompressed content.
+        let len = gz.read_to_string(&mut contents)?;
         if len > self.config.max_file_size {
             return Err(crate::error::DmarcError::FileTooLarge(format!(
                 "Decompressed GZ size {} bytes exceeds limit",
@@ -92,7 +92,7 @@ impl FileHandler {
     /// Handles reading from plain XML files.
     fn handle_xml(&self, path: &std::path::Path) -> crate::error::Result<Vec<String>> {
         let file = std::fs::File::open(path)?;
-        let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
+        let mut reader = BufReader::new(file);
         let mut contents = String::new();
         let len = reader.read_to_string(&mut contents)?;
         if len as u64 > self.config.max_file_size as u64 {
@@ -119,7 +119,8 @@ mod tests {
         let zip_path = dir.path().join("test.zip");
         let file = std::fs::File::create(&zip_path)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        // Annotate options explicitly.
+        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
         zip.start_file("test.xml", options)?;
         zip.write_all(b"<feedback></feedback>")?;
         zip.finish()?;

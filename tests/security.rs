@@ -1,10 +1,3 @@
-/// Security tests for DMARCer.
-///
-/// This module verifies that the analyzer is protected against common attacks:
-/// - ZIP Bombs (by enforcing decompression and file count limits)
-/// - XML External Entity (XXE) Injection
-/// - Directory Traversal attacks in archive filenames
-/// - Billion Laughs (recursive XML entity) attacks
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
@@ -24,13 +17,14 @@ mod tests {
         let zip_path = dir.path().join("zipbomb.zip");
         let file = File::create(&zip_path)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        // Explicitly annotate FileOptions with the default extension type, i.e. ()
+        let options: zip::write::FileOptions<()> = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("large.xml", options)?;
-        // Create a test bomb of 2MB
+        // Create a test bomb of 2MB.
         let large_chunk = "A".repeat(TEST_BOMB_SIZE);
         zip.write_all(large_chunk.as_bytes())?;
         zip.finish()?;
-        // Override configuration to set max_decompressed_size to 1MB for testing
+        // Override configuration to set max_decompressed_size to 1MB for testing.
         let mut config = Config::new()?;
         config.max_decompressed_size = 1 * 1024 * 1024; // 1MB
         let start = Instant::now();
@@ -84,7 +78,7 @@ mod tests {
         let zip_path = dir.path().join("traversal.zip");
         let file = File::create(&zip_path)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options = FileOptions::default();
+        let options: zip::write::FileOptions<()> = FileOptions::default();
         zip.start_file("../../../etc/passwd", options)?;
         zip.write_all(b"fake passwd file")?;
         zip.finish()?;

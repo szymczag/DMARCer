@@ -1,47 +1,34 @@
 //! XML Parser Module
 //!
 //! This module parses DMARC XML reports and extracts DMARC records and published policy
-//! information. It enforces a recursion depth limit to protect against attacks such as
-//! the Billion Laughs attack. Moreover, it completely disables the processing of DOCTYPE
-//! declarations (and hence external/internal entities) by removing any DOCTYPE block
-//! from the input. If a DOCTYPE block contains two or more entity definitions, the XML is rejected.
+//! information. It enforces a recursion depth limit to protect against attacks (such as the
+//! Billion Laughs attack). Additionally, any DOCTYPE declaration is removed from the input.
+//! If the DOCTYPE block contains two or more entity definitions, the XML is rejected.
 
 use crate::error::{DmarcError, Result};
 use crate::models::{DmarcRecord, DmarcPolicy, DkimResult, SpfResult, DateRange};
 use crate::models::{DkimVerdict, SpfVerdict, AlignmentMode, PolicyType};
 use quick_xml::events::Event;
-use quick_xml::reader::Reader;
+use quick_xml::Reader;
+use std::io;
 
-/// Parses the DMARC XML content and returns a tuple of DMARC records and the published policy.
-///
-/// # Arguments
-///
-/// * `xml_content` - A string slice containing the XML content.
-///
-/// # Errors
-///
-/// Returns an error if the XML cannot be parsed, if the recursion depth limit is exceeded,
-/// or if the DOCTYPE block (if present) defines two or more entity definitions.
 pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPolicy)> {
-    // Check if the XML contains a DOCTYPE declaration.
-    // If found, extract and inspect the DOCTYPE block.
-    // If the DOCTYPE defines two or more entities, reject the XML.
-    // Otherwise, remove the DOCTYPE block entirely.
+    // If a DOCTYPE declaration is found, process the DOCTYPE block.
     let cleaned_xml = if let Some(start) = xml_content.find("<!DOCTYPE") {
         if let Some(end) = xml_content[start..].find("]>") {
-            let doctype = &xml_content[start..start + end + 2];
-            let entity_count = doctype.matches("<!ENTITY").count();
+            let doctype_block = &xml_content[start..start + end + 2];
+            let entity_count = doctype_block.matches("<!ENTITY").count();
             if entity_count >= 2 {
-                return Err(DmarcError::Xml(quick_xml::Error::UnexpectedEof(
-                    "Recursive entities detected".into()
+                return Err(DmarcError::Xml(quick_xml::Error::from(
+                    io::Error::new(io::ErrorKind::Other, "Recursive entities detected")
                 )));
             }
-            // Remove the DOCTYPE block from the XML.
+            // Remove the DOCTYPE block entirely.
             let before = &xml_content[..start];
             let after = &xml_content[start + end + 2..];
             format!("{}{}", before, after)
         } else {
-            // If we cannot find the end of the DOCTYPE, use the original XML.
+            // If we cannot find the end of the DOCTYPE block, use the original XML.
             xml_content.to_string()
         }
     } else {
@@ -49,7 +36,7 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
     };
 
     let mut reader = Reader::from_str(&cleaned_xml);
-    reader.trim_text(true);
+    // quick_xml v0.37.2 no longer provides trim_text; we'll trim each text value individually.
 
     let mut records = Vec::new();
     let mut policy = DmarcPolicy {
@@ -62,15 +49,15 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
 
     let mut current_record: Option<DmarcRecord> = None;
     let mut depth: u32 = 0;
-    let max_depth = 20; // Prevent excessive recursion
+    let max_depth = 100; // Increased depth limit
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 depth += 1;
                 if depth > max_depth {
-                    return Err(DmarcError::Xml(quick_xml::Error::UnexpectedEof(
-                        "XML recursion depth limit exceeded".into()
+                    return Err(DmarcError::Xml(quick_xml::Error::from(
+                        io::Error::new(io::ErrorKind::Other, "XML recursion depth limit exceeded")
                     )));
                 }
                 match e.name().as_ref() {
@@ -142,7 +129,6 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
     Ok((records, policy))
 }
 
-/// Parses the `<policy_published>` element.
 fn parse_policy_published(reader: &mut Reader<&[u8]>) -> Result<DmarcPolicy> {
     let mut domain = String::new();
     let mut adkim = AlignmentMode::Relaxed;
@@ -150,120 +136,134 @@ fn parse_policy_published(reader: &mut Reader<&[u8]>) -> Result<DmarcPolicy> {
     let mut p = PolicyType::None;
     let mut pct = 100u8;
     loop {
-         match reader.read_event() {
-             Ok(Event::Start(ref e)) => {
-                 match e.name().as_ref() {
-                     b"domain" => {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                match e.name().as_ref() {
+                    b"domain" => {
                         domain = reader.read_text(e.name())?.trim().to_string();
-                     },
-                     b"adkim" => {
+                    },
+                    b"adkim" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
-                        adkim = if text.to_lowercase().starts_with("s") { AlignmentMode::Strict } else { AlignmentMode::Relaxed };
-                     },
-                     b"aspf" => {
+                        adkim = if text.to_lowercase().starts_with("s") {
+                            AlignmentMode::Strict
+                        } else {
+                            AlignmentMode::Relaxed
+                        };
+                    },
+                    b"aspf" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
-                        aspf = if text.to_lowercase().starts_with("s") { AlignmentMode::Strict } else { AlignmentMode::Relaxed };
-                     },
-                     b"p" => {
+                        aspf = if text.to_lowercase().starts_with("s") {
+                            AlignmentMode::Strict
+                        } else {
+                            AlignmentMode::Relaxed
+                        };
+                    },
+                    b"p" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
                         p = match text.to_lowercase().as_str() {
-                           "reject" => PolicyType::Reject,
-                           "quarantine" => PolicyType::Quarantine,
-                           _ => PolicyType::None,
+                            "reject" => PolicyType::Reject,
+                            "quarantine" => PolicyType::Quarantine,
+                            _ => PolicyType::None,
                         };
-                     },
-                     b"pct" => {
+                    },
+                    b"pct" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
                         pct = text.parse().unwrap_or(100);
-                     },
-                     _ => {}
-                 }
-             },
-             Ok(Event::End(ref e)) => {
-                 if e.name().as_ref() == b"policy_published" {
-                     break;
-                 }
-             },
-             Ok(Event::Eof) => break,
-             Err(e) => return Err(DmarcError::Xml(e)),
-             _ => {}
-         }
+                    },
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                if e.name().as_ref() == b"policy_published" {
+                    break;
+                }
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DmarcError::Xml(e)),
+            _ => {}
+        }
     }
     Ok(DmarcPolicy {
-         domain,
-         adkim,
-         aspf,
-         policy: p,
-         pct,
+        domain,
+        adkim,
+        aspf,
+        policy: p,
+        pct,
     })
 }
 
-/// Parses the `<dkim>` element.
 fn parse_dkim(reader: &mut Reader<&[u8]>) -> Result<DkimResult> {
     let mut domain = String::new();
     let mut selector = String::new();
     let mut result_dkim = DkimVerdict::None;
     loop {
-         match reader.read_event() {
-              Ok(Event::Start(ref e)) => {
-                  match e.name().as_ref() {
-                     b"domain" => {
-                         domain = reader.read_text(e.name())?.trim().to_string();
-                     },
-                     b"selector" => {
-                         selector = reader.read_text(e.name())?.trim().to_string();
-                     },
-                     b"result" => {
-                         let text = reader.read_text(e.name())?.trim().to_string();
-                         result_dkim = text.parse().unwrap_or(DkimVerdict::None);
-                     },
-                     _ => {},
-                  }
-              },
-              Ok(Event::End(ref e)) => {
-                  if e.name().as_ref() == b"dkim" {
-                      break;
-                  }
-              },
-              Ok(Event::Eof) => break,
-              Err(e) => return Err(DmarcError::Xml(e)),
-              _ => {},
-         }
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                match e.name().as_ref() {
+                    b"domain" => {
+                        domain = reader.read_text(e.name())?.trim().to_string();
+                    },
+                    b"selector" => {
+                        selector = reader.read_text(e.name())?.trim().to_string();
+                    },
+                    b"result" => {
+                        let text = reader.read_text(e.name())?.trim().to_string();
+                        result_dkim = text.parse().unwrap_or(DkimVerdict::None);
+                    },
+                    _ => {},
+                }
+            },
+            Ok(Event::End(ref e)) => {
+                if e.name().as_ref() == b"dkim" {
+                    break;
+                }
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DmarcError::Xml(e)),
+            _ => {}
+        }
     }
-    Ok(DkimResult { domain, selector, result: result_dkim })
+    Ok(DkimResult {
+        domain,
+        selector,
+        result: result_dkim,
+    })
 }
 
-/// Parses the `<spf>` element.
 fn parse_spf(reader: &mut Reader<&[u8]>) -> Result<SpfResult> {
     let mut domain = String::new();
     let mut scope = String::new();
     let mut result_spf = SpfVerdict::None;
     loop {
-         match reader.read_event() {
-              Ok(Event::Start(ref e)) => {
-                  match e.name().as_ref() {
-                     b"domain" => {
-                         domain = reader.read_text(e.name())?.trim().to_string();
-                     },
-                     b"scope" => {
-                         scope = reader.read_text(e.name())?.trim().to_string();
-                     },
-                     b"result" => {
-                         let text = reader.read_text(e.name())?.trim().to_string();
-                         result_spf = text.parse().unwrap_or(SpfVerdict::None);
-                     },
-                     _ => {},
-                  }
-              },
-              Ok(Event::End(ref e)) => {
-                  if e.name().as_ref() == b"spf" {
-                      break;
-                  }
-              },
-              Ok(Event::Eof) => break,
-              Err(e) => return Err(DmarcError::Xml(e)),
-              _ => {},
-         }
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                match e.name().as_ref() {
+                    b"domain" => {
+                        domain = reader.read_text(e.name())?.trim().to_string();
+                    },
+                    b"scope" => {
+                        scope = reader.read_text(e.name())?.trim().to_string();
+                    },
+                    b"result" => {
+                        let text = reader.read_text(e.name())?.trim().to_string();
+                        result_spf = text.parse().unwrap_or(SpfVerdict::None);
+                    },
+                    _ => {},
+                }
+            },
+            Ok(Event::End(ref e)) => {
+                if e.name().as_ref() == b"spf" {
+                    break;
+                }
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DmarcError::Xml(e)),
+            _ => {}
+        }
     }
-    Ok(SpfResult { domain, scope, result: result_spf })
+    Ok(SpfResult {
+        domain,
+        scope,
+        result: result_spf,
+    })
 }

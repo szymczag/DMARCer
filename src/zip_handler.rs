@@ -1,13 +1,13 @@
 //! ZIP Handler Module
 //!
-//! This module handles extraction of DMARC report files from ZIP and GZIP archives.
-//! It enforces security measures including file size limits, maximum decompressed
-//! size, file count, compression ratio, filename length, and path traversal prevention.
+//! This module handles the extraction of DMARC report files from ZIP and GZIP archives.
+//! It enforces security measures including file size limits, maximum decompressed size,
+//! file count, compression ratio, filename length, and path traversal prevention.
 use std::fs::File;
 use std::io::{Read, BufReader};
 use std::path::Path;
 use anyhow::{Result, Context};
-use zip::ZipArchive;
+use zip::read::ZipArchive;  // Updated import for zip crate v2.2.2
 use flate2::read::GzDecoder;
 use crate::error::DmarcError;
 use crate::config::Config;
@@ -21,7 +21,7 @@ use crate::config::Config;
 /// # Security Checks
 ///
 /// - Verifies that the original file size does not exceed the maximum.
-/// - For ZIP archives: verifies the number of files, checks for path traversal, file name length,
+/// - For ZIP archives: verifies the number of files, checks for path traversal, filename length,
 ///   compression ratio, and decompressed size.
 /// - For GZIP and XML files: checks the decompressed content size.
 pub fn extract_zip<P: AsRef<Path>>(file_path: P, config: &Config) -> Result<Vec<String>> {
@@ -74,8 +74,11 @@ pub fn extract_zip<P: AsRef<Path>>(file_path: P, config: &Config) -> Result<Vec<
             let mut gz_decoder = GzDecoder::new(file);
             let mut contents = String::new();
             let len = gz_decoder.read_to_string(&mut contents)?;
-            if len > config.max_decompressed_size {
-                return Err(DmarcError::FileTooLarge("Decompressed size too large".to_string()).into());
+            if len > config.max_file_size {
+                return Err(DmarcError::FileTooLarge(format!(
+                    "Decompressed GZ size {} bytes exceeds limit",
+                    len
+                )).into());
             }
             Ok(vec![contents])
         },
