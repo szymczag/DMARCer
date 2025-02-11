@@ -23,7 +23,7 @@ cd dmarcer
 cargo build --release
 ```
 
-##⚙️ Usage
+## ⚙️ Usage
 DMARCer is a command-line tool. The basic usage is as follows:
 ```sh
 dmarcer <FILE> [OPTIONS]
