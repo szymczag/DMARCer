@@ -30,13 +30,13 @@ use models::DmarcRecord;
 /// CLI arguments for DMARCer.
 #[derive(Parser, Debug)]
 #[command(
-    author,
-    version,
+    author = "Maciej Szymczak",
+    version = "v1.0",
     about = "Next-gen DMARC report analyzer in Rust",
     long_about = "DMARCer extracts, parses, and analyzes DMARC reports from ZIP archives. \
                   It displays the published DMARC policy and detailed SPF/DKIM results.\n\n\
                   USAGE:\n  dmarcer <FILE> [--output <table|csv|json>] [--verbose]",
-    usage = "dmarcer <FILE> [OPTIONS]"
+    override_usage = "dmarcer <FILE> [OPTIONS]"
 )]
 struct Cli {
     /// Path to DMARC ZIP report
