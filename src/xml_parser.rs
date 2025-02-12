@@ -1,43 +1,39 @@
 //! XML Parser Module
 //!
-//! This module parses DMARC XML reports and extracts DMARC records and published policy
-//! information. It enforces a recursion depth limit to protect against attacks (such as the
-//! Billion Laughs attack). Additionally, any DOCTYPE declaration is removed from the input.
-//! If the DOCTYPE block contains two or more entity definitions, the XML is rejected.
+//! DMARCer parses DMARC XML reports and extracts DMARC records and published policy information.
+//! It enforces a recursion depth limit to protect against attacks (such as the Billion Laughs attack).
+//! Additionally, it completely removes any DOCTYPE declaration from the XML.
+//! If the DOCTYPE block defines two or more entity definitions, the XML is rejected.
+//! This ensures that DMARC reports (which do not require DTD processing) are parsed safely.
 
 use crate::error::{DmarcError, Result};
 use crate::models::{DmarcRecord, DmarcPolicy, DkimResult, SpfResult, DateRange};
 use crate::models::{DkimVerdict, SpfVerdict, AlignmentMode, PolicyType};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use regex::Regex;
 use std::io;
 
 pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPolicy)> {
-    // If a DOCTYPE declaration is found, process the DOCTYPE block.
-    let cleaned_xml = if let Some(start) = xml_content.find("<!DOCTYPE") {
-        if let Some(end) = xml_content[start..].find("]>") {
-            let doctype_block = &xml_content[start..start + end + 2];
-            let entity_count = doctype_block.matches("<!ENTITY").count();
-            if entity_count >= 2 {
-                return Err(DmarcError::Xml(quick_xml::Error::from(
-                    io::Error::new(io::ErrorKind::Other, "Recursive entities detected")
-                )));
-            }
-            // Remove the DOCTYPE block entirely.
-            let before = &xml_content[..start];
-            let after = &xml_content[start + end + 2..];
-            format!("{}{}", before, after)
-        } else {
-            // If we cannot find the end of the DOCTYPE block, use the original XML.
-            xml_content.to_string()
+    // Use a regex to locate the DOCTYPE block.
+    let re = Regex::new(r"(?s)<!DOCTYPE.*?\]>").unwrap();
+    let cleaned_xml = if let Some(mat) = re.find(xml_content) {
+        let doctype_block = mat.as_str();
+        // Count the number of entity definitions within the DOCTYPE block.
+        let entity_count = doctype_block.matches("<!ENTITY").count();
+        if entity_count >= 2 {
+            return Err(DmarcError::Xml(quick_xml::Error::from(
+                io::Error::new(io::ErrorKind::Other, "Recursive entities detected")
+            )));
         }
+        // Remove the DOCTYPE block entirely.
+        re.replace_all(xml_content, "").to_string()
     } else {
         xml_content.to_string()
     };
 
     let mut reader = Reader::from_str(&cleaned_xml);
-    // quick_xml v0.37.2 no longer provides trim_text; we'll trim each text value individually.
-
+    // quick_xml v0.37.2 does not offer a trim_text method, so we trim each text value individually.
     let mut records = Vec::new();
     let mut policy = DmarcPolicy {
         domain: String::new(),
@@ -48,8 +44,9 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
     };
 
     let mut current_record: Option<DmarcRecord> = None;
+    let mut in_auth_results = false;
     let mut depth: u32 = 0;
-    let max_depth = 100; // Increased depth limit
+    let max_depth = 100; // Increased depth limit to allow valid DMARC reports
 
     loop {
         match reader.read_event() {
@@ -80,6 +77,9 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
                     b"policy_published" => {
                         policy = parse_policy_published(&mut reader)?;
                     }
+                    b"auth_results" => {
+                        in_auth_results = true;
+                    }
                     b"source_ip" => {
                         if let Some(record) = current_record.as_mut() {
                             record.source_ip = reader.read_text(e.name())?.trim().to_string();
@@ -96,14 +96,18 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
                         }
                     }
                     b"dkim" => {
-                        if let Some(record) = current_record.as_mut() {
-                            let dkim = parse_dkim(&mut reader)?;
-                            record.dkim.push(dkim);
+                        if in_auth_results {
+                            if let Some(record) = current_record.as_mut() {
+                                let dkim = parse_dkim(&mut reader)?;
+                                record.dkim.push(dkim);
+                            }
                         }
                     }
                     b"spf" => {
-                        if let Some(record) = current_record.as_mut() {
-                            record.spf = parse_spf(&mut reader)?;
+                        if in_auth_results {
+                            if let Some(record) = current_record.as_mut() {
+                                record.spf = parse_spf(&mut reader)?;
+                            }
                         }
                     }
                     _ => {}
@@ -116,13 +120,16 @@ pub fn parse_dmarc_xml(xml_content: &str) -> Result<(Vec<DmarcRecord>, DmarcPoli
                             records.push(record);
                         }
                     }
+                    b"auth_results" => {
+                        in_auth_results = false;
+                    }
                     _ => {}
                 }
                 depth = depth.saturating_sub(1);
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(DmarcError::Xml(e)),
-            _ => (),
+            _ => {}
         }
     }
 
@@ -144,19 +151,11 @@ fn parse_policy_published(reader: &mut Reader<&[u8]>) -> Result<DmarcPolicy> {
                     },
                     b"adkim" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
-                        adkim = if text.to_lowercase().starts_with("s") {
-                            AlignmentMode::Strict
-                        } else {
-                            AlignmentMode::Relaxed
-                        };
+                        adkim = if text.to_lowercase().starts_with("s") { AlignmentMode::Strict } else { AlignmentMode::Relaxed };
                     },
                     b"aspf" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
-                        aspf = if text.to_lowercase().starts_with("s") {
-                            AlignmentMode::Strict
-                        } else {
-                            AlignmentMode::Relaxed
-                        };
+                        aspf = if text.to_lowercase().starts_with("s") { AlignmentMode::Strict } else { AlignmentMode::Relaxed };
                     },
                     b"p" => {
                         let text = reader.read_text(e.name())?.trim().to_string();
@@ -172,7 +171,7 @@ fn parse_policy_published(reader: &mut Reader<&[u8]>) -> Result<DmarcPolicy> {
                     },
                     _ => {}
                 }
-            }
+            },
             Ok(Event::End(ref e)) => {
                 if e.name().as_ref() == b"policy_published" {
                     break;
